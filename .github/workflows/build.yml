@@ -21,19 +21,18 @@ jobs:
           make 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           echo "MAKE_EXIT=$code" >> $GITHUB_ENV
+          grep -nE "error:|Error|undefined reference|missing separator|No rule to make target" build.log | head -25 | while IFS= read -r l; do
+            echo "::error::${l:0:900}"
+          done
           exit $code
 
-      - name: Log nel summary (per debug pubblico)
+      - name: Upload build.log (debug)
         if: always()
-        run: |
-          {
-            echo "<details><summary>build.log</summary>"
-            echo ''
-            echo '```'
-            tail -n 400 build.log 2>/dev/null || true
-            echo '```'
-            echo '</details>'
-          } >> "$GITHUB_STEP_SUMMARY"
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
 
       - name: Upload EBOOT.PBP artifact
         uses: actions/upload-artifact@v4
