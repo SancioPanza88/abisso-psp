@@ -15,9 +15,9 @@ EXTRA_TARGETS = EBOOT.PBP
 PSP_EBOOT_TITLE = ABISSO
 
 # Atlas degli asset originali (assets/atlas.rle) incorporato nell'EBOOT:
-# genera i simboli atlas_rle / atlas_rle_end / atlas_rle_size
+# genera i simboli atlas_rle_start / atlas_rle_end / atlas_rle_size
 atlas_rle.o: assets/atlas.rle
-	bin2o -i $< -o $@ -n atlas_rle
+	bin2o assets/atlas.rle atlas_rle.o atlas_rle
 
 PSPSDK=$(shell psp-config --pspsdk-path)
 include $(PSPSDK)/lib/build.mak

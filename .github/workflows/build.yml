@@ -3,9 +3,7 @@ name: Build PSP EBOOT
 on:
   push:
     branches: [main, master]
-  workflow_dispatch:
-  release:
-    types: [published]
+  workflow_dispatch
 
 jobs:
   build:
@@ -18,25 +16,26 @@ jobs:
       - name: Build
         run: |
           set +e
-          make 2>&1 | tee build.log
-          code=${PIPESTATUS[0]}
-          echo "MAKE_EXIT=$code" >> $GITHUB_ENV
+          make > build.log 2>&1
+          code=$?
+          cat build.log
           grep -nE "error:|Error|undefined reference|missing separator|No rule to make target" build.log | head -25 | while IFS= read -r l; do
-            echo "::error::${l:0:900}"
+            echo "::error::$l"
           done
           exit $code
 
-      - name: Upload build.log (debug)
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-log
-          path: build.log
-          if-no-files-found: ignore
-
       - name: Upload EBOOT.PBP artifact
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: abisso-psp-eboot
           path: EBOOT.PBP
           if-no-files-found: error
+
+      - name: Upload build.log (debug)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
+          if-no-files-found: ignore
