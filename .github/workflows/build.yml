@@ -1,0 +1,26 @@
+name: Build PSP EBOOT
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+  release:
+    types: [published]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: pspdev/pspsdk:latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+
+      - name: Upload EBOOT.PBP artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: abisso-psp-eboot
+          path: EBOOT.PBP
+          if-no-files-found: error
