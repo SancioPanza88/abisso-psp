@@ -10,7 +10,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    container: pspdev/pspsdk:latest
+    container: ghcr.io/pspdev/pspsdk:latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
