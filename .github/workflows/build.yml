@@ -16,7 +16,24 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build
-        run: make
+        run: |
+          set +e
+          make 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          echo "MAKE_EXIT=$code" >> $GITHUB_ENV
+          exit $code
+
+      - name: Log nel summary (per debug pubblico)
+        if: always()
+        run: |
+          {
+            echo "<details><summary>build.log</summary>"
+            echo ''
+            echo '```'
+            tail -n 400 build.log 2>/dev/null || true
+            echo '```'
+            echo '</details>'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Upload EBOOT.PBP artifact
         uses: actions/upload-artifact@v4
