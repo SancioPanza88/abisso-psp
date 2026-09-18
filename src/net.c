@@ -59,7 +59,8 @@ static int s_lflags, s_ldepth, s_lgold, s_lpotions;
 
 /* ---- trasporto adhoc ---- */
 static int s_adhocId = -1;
-static struct sockaddr_adhoc s_adhocAddr;
+static SceNetEtherAddr s_adhocBcast;   /* FF:FF:FF:FF:FF:FF */
+static SceNetEtherAddr s_adhocMac;     /* MAC locale */
 
 /* ---- trasporto inet ---- */
 static int s_sock = -1;
@@ -104,7 +105,7 @@ static void rawSend(const void* data, int len)
 {
     if (s_transport == NET_TRANSPORT_ADHOC) {
         if (s_adhocId >= 0)
-            sceNetAdhocPdpSend(s_adhocId, &s_adhocAddr, NET_ADHOC_PORT,
+            sceNetAdhocPdpSend(s_adhocId, &s_adhocBcast, NET_ADHOC_PORT,
                                (void*)data, len, 0, 0);
     } else if (s_transport == NET_TRANSPORT_INET) {
         if (s_sock >= 0)
@@ -115,12 +116,13 @@ static void rawSend(const void* data, int len)
 static int rawRecv(void* data, int maxLen, int* fromPeer)
 {
     if (s_transport == NET_TRANSPORT_ADHOC) {
-        struct sockaddr_adhoc from;
-        unsigned int fromLen = sizeof(from);
-        int r = sceNetAdhocPdpRecv(s_adhocId, &from, &fromLen, data, &maxLen, 0, 0);
+        SceNetEtherAddr srcMac;
+        unsigned short srcPort = 0;
+        unsigned int rlen = (unsigned int)maxLen;
+        int r = sceNetAdhocPdpRecv(s_adhocId, &srcMac, &srcPort, data, &rlen, 0, 0);
         if (r < 0) return 0;
         if (fromPeer) *fromPeer = 0;
-        return maxLen;
+        return (int)rlen;
     } else if (s_transport == NET_TRANSPORT_INET) {
         struct sockaddr_in from;
         socklen_t fromLen = sizeof(from);
@@ -243,16 +245,15 @@ static void pump(void)
 
 static int initAdhoc(void)
 {
+    if (sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) < 0) return 0;
+    s_netInited = 1;
     if (sceNetAdhocInit() < 0) return 0;
     if (sceNetAdhocctlInit(0x2000, 0x20, 0) < 0) return 0;
     if (sceNetAdhocctlConnect("ABISSO") < 0) return 0;
-    s_adhocId = sceNetAdhocPdpCreate((unsigned char*)&s_adhocAddr, NET_ADHOC_PORT,
-                                     0x400, 0);
+    if (sceNetGetLocalMac(&s_adhocMac) < 0) return 0;
+    memset(s_adhocBcast.data, 0xff, sizeof(s_adhocBcast.data));
+    s_adhocId = sceNetAdhocPdpCreate(&s_adhocMac, NET_ADHOC_PORT, 0x400, 0);
     if (s_adhocId < 0) return 0;
-    s_adhocAddr.sa_family = AF_INET;
-    s_adhocAddr.sa_data[0] = 0;
-    s_adhocAddr.sa_data[1] = 0;
-    memset(s_adhocAddr.sa_data + 2, 0xff, 4); /* broadcast adhoc */
     return 1;
 }
 
