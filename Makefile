@@ -16,6 +16,10 @@ LIBS = -lpspgum -lpspgu -lm \
 EXTRA_TARGETS = EBOOT.PBP
 PSP_EBOOT_TITLE = ABISSO
 
+# La prima regola diventa il goal di default: forziamo "all" (definito in
+# build.mak) cosi' che "make" costruisca l'ELF e l'EBOOT.PBP, non solo l'atlas.
+.DEFAULT_GOAL := all
+
 # Atlas degli asset originali (assets/atlas.rle) incorporato nell'EBOOT:
 # genera i simboli atlas_rle_start / atlas_rle_end / atlas_rle_size
 atlas_rle.o: assets/atlas.rle
