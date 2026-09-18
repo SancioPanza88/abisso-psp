@@ -38,6 +38,33 @@ make
 | M                     | SELECT                 | Minimappa on/off                |
 | Esc                   | START                  | Pausa                           |
 
+## Multiplayer
+
+Come l'originale, il gioco è **host-autorevole**: l'host simula mostri,
+proiettili, oggetti e boss, i client inviano il proprio input e ricevono gli
+aggiornamenti. Su PSP il netcode WebRTC/Trystero originale è sostituito da due
+trasporti nativi (vedi `src/net.c`):
+
+- **Adhoc** (`sceNetAdhoc`): partite PSP-PSP, senza infrastruttura.
+- **Rete PSP-PC** (`sceNetInet`): co-op con il gioco su browser via bridge,
+  o PSP-PSP su LAN.
+
+Dalla schermata di scelta classe si entra nel menu **Modalità di gioco**:
+1 Giocatore / Multiplayer Adhoc (PSP-PSP) / Multiplayer Rete (PSP-PC).
+
+Protocollo binario a 20 Hz (vedi `src/net.h`): `HELLO/BYE`, `INPUT/STATE`
+(posizione, facing, hp, flag azione), `SNAPSHOT` (delta mondo host-client),
+`MHIT` (danno mostro-giocatore), `SYNCREQ/SYNCREP` (fingerprint mondo), `CHAT`.
+I giocatori remoti sono interpolati e disegnati con sprite, barra vita, nome e
+bolla di chat, come la mappa `remotePlayers` originale.
+
+### Co-op PSP - PC
+
+1. Sulla PSP scegli *Multiplayer Rete (PSP-PC)* e avvia la partita.
+2. Sul PC esegui `node tools/pc_bridge.js` (solo Node.js, nessuna dipendenza).
+3. Il bridge ascolta UDP `34567` (PSP) e WebSocket `34569` (browser), scopre la
+   PSP e fa da relay. Un client d'esempio è in `tools/pc_client.html`.
+
 ## Cosa è stato portato (fedele all'originale)
 
 - Le **9 classi eroe** con statistiche, gittate, archi d'attacco, critici,
@@ -74,9 +101,9 @@ make
 
 ## Differenze dichiarate (hardware/network)
 
-- **Multiplayer WebRTC/chat vocale/testi**: impossibili su PSP senza
-  infrastruttura ad-hoc; il gioco è single-player con la simulazione
-  host-autorevole originale eseguita localmente.
+- **Multiplayer**: il WebRTC/Trystero dell'originale non esiste su PSP; è
+  sostituito dal netcode nativo descritto sopra (Adhoc PSP-PSP e UDP PSP-PC).
+  Chat vocale non inclusa; chat testuale via protocollo `CHAT`.
 - **Modalità prima persona/isometrica (tasto V)** e modalità C64 non incluse;
   vista topdown come il gioco principale.
 - Audio sintetizzato al volo (come le musiche WebAudio generate) via synth

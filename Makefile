@@ -1,6 +1,6 @@
 TARGET = abisso
 OBJS = src/main.o src/game.o src/dungeon.o src/data.o src/gfx.o src/ui.o src/audio.o \
-       src/atlas_rects.o atlas_rle.o
+       src/net.o src/atlas_rects.o atlas_rle.o
 
 INCDIR = src
 CFLAGS = -O2 -G0 -Wall
@@ -9,7 +9,9 @@ ASFLAGS = $(CFLAGS)
 
 LIBDIR =
 LDFLAGS =
-LIBS = -lpspgum -lpspgu -lm
+LIBS = -lpspgum -lpspgu -lm \
+       -lpspnet -lpspnet_inet -lpspnet_apctl \
+       -lpspnet_adhoc -lpspnet_adhocctl -lpspnet_resolver
 
 EXTRA_TARGETS = EBOOT.PBP
 PSP_EBOOT_TITLE = ABISSO
