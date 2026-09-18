@@ -7,8 +7,10 @@
 #include <pspnet.h>
 #include <pspnet_inet.h>
 #include <pspnet_apctl.h>
+#include <pspnet_resolver.h>
 #include <pspnet_adhoc.h>
 #include <pspnet_adhocctl.h>
+#include <pspwlan.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -59,8 +61,8 @@ static int s_lflags, s_ldepth, s_lgold, s_lpotions;
 
 /* ---- trasporto adhoc ---- */
 static int s_adhocId = -1;
-static SceNetEtherAddr s_adhocBcast;   /* FF:FF:FF:FF:FF:FF */
-static SceNetEtherAddr s_adhocMac;     /* MAC locale */
+static unsigned char s_adhocBcast[6];  /* FF:FF:FF:FF:FF:FF */
+static unsigned char s_adhocMac[6];    /* MAC locale (sceWlanGetEtherAddr) */
 
 /* ---- trasporto inet ---- */
 static int s_sock = -1;
@@ -105,8 +107,8 @@ static void rawSend(const void* data, int len)
 {
     if (s_transport == NET_TRANSPORT_ADHOC) {
         if (s_adhocId >= 0)
-            sceNetAdhocPdpSend(s_adhocId, &s_adhocBcast, NET_ADHOC_PORT,
-                               (void*)data, len, 0, 0);
+            sceNetAdhocPdpSend(s_adhocId, s_adhocBcast, NET_ADHOC_PORT,
+                               (void*)data, (unsigned int)len, 0, 0);
     } else if (s_transport == NET_TRANSPORT_INET) {
         if (s_sock >= 0)
             sendto(s_sock, data, len, 0, (struct sockaddr*)&s_dest, sizeof(s_dest));
@@ -116,10 +118,10 @@ static void rawSend(const void* data, int len)
 static int rawRecv(void* data, int maxLen, int* fromPeer)
 {
     if (s_transport == NET_TRANSPORT_ADHOC) {
-        SceNetEtherAddr srcMac;
+        unsigned char srcMac[6];
         unsigned short srcPort = 0;
         unsigned int rlen = (unsigned int)maxLen;
-        int r = sceNetAdhocPdpRecv(s_adhocId, &srcMac, &srcPort, data, &rlen, 0, 0);
+        int r = sceNetAdhocPdpRecv(s_adhocId, srcMac, &srcPort, data, &rlen, 0, 0);
         if (r < 0) return 0;
         if (fromPeer) *fromPeer = 0;
         return (int)rlen;
@@ -245,14 +247,19 @@ static void pump(void)
 
 static int initAdhoc(void)
 {
+    struct productStruct product;
+    memset(&product, 0, sizeof(product));
+    product.unknown = 1;
+    snprintf(product.product, sizeof(product.product), "ABISSO");
+
     if (sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) < 0) return 0;
     s_netInited = 1;
     if (sceNetAdhocInit() < 0) return 0;
-    if (sceNetAdhocctlInit(0x2000, 0x20, 0) < 0) return 0;
+    if (sceNetAdhocctlInit(0x2000, 0x30, &product) < 0) return 0;
     if (sceNetAdhocctlConnect("ABISSO") < 0) return 0;
-    if (sceNetGetLocalMac(&s_adhocMac) < 0) return 0;
-    memset(s_adhocBcast.data, 0xff, sizeof(s_adhocBcast.data));
-    s_adhocId = sceNetAdhocPdpCreate(&s_adhocMac, NET_ADHOC_PORT, 0x400, 0);
+    if (sceWlanGetEtherAddr(s_adhocMac) < 0) return 0;
+    memset(s_adhocBcast, 0xff, sizeof(s_adhocBcast));
+    s_adhocId = sceNetAdhocPdpCreate(s_adhocMac, NET_ADHOC_PORT, 0x400, 0);
     if (s_adhocId < 0) return 0;
     return 1;
 }
@@ -262,6 +269,9 @@ static int initInet(const char* host)
     if (!s_netInited) {
         if (sceNetInit(0x20000, 0x20, 0x1000, 0x20, 0x1000) < 0) return 0;
         if (sceNetInetInit() < 0) return 0;
+        if (sceNetApctlInit(0x1000, 0x48) < 0) return 0;
+        /* connessione al primo profilo di rete configurato sulla PSP */
+        sceNetApctlConnect(1);
         s_netInited = 1;
     }
     s_sock = socket(AF_INET, SOCK_DGRAM, 0);
