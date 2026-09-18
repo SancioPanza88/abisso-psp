@@ -21,13 +21,14 @@ PSP_EBOOT_TITLE = ABISSO
 # build.mak) cosi' che "make" costruisca l'ELF e l'EBOOT.PBP, non solo l'atlas.
 .DEFAULT_GOAL := all
 
-# Atlas degli asset originali (assets/atlas.rle) incorporato nell'EBOOT:
-# genera i simboli atlas_rle_start / atlas_rle_end / atlas_rle_size.
-# NOTA: bin2o assembla con psp-as senza i flag di architettura e produce un
-# oggetto mips:5900/EABI64 incompatibile; si usa bin2s + psp-gcc che compila
-# con l'architettura corretta (allegrex/EABI32) come i sorgenti C.
+# Atlas degli asset originali (assets/atlas.rle) incorporato nell'EBOOT.
+# Simboli identici a quelli di bin2o (verificati sul sorgente pspsdk):
+# atlas_rle_start / atlas_rle_end / atlas_rle_size.
+# bin2o e' scartato perche' assembla con psp-as senza flag di architettura
+# (oggetto mips:5900/EABI64 incompatibile); qui l'assembly e' compilato con
+# psp-gcc, quindi allegrex/EABI32 come i sorgenti C.
 atlas_rle.s: assets/atlas.rle
-	bin2s assets/atlas.rle atlas_rle.s atlas_rle
+	printf '.data\n.balign 16\n.globl atlas_rle_start\natlas_rle_start:\n.incbin "assets/atlas.rle"\n.globl atlas_rle_end\natlas_rle_end:\n.globl atlas_rle_size\natlas_rle_size: .word atlas_rle_end - atlas_rle_start\n' > $@
 
 atlas_rle.o: atlas_rle.s
 	psp-gcc $(ASFLAGS) -c -o $@ $<
