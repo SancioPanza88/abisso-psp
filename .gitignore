@@ -3,3 +3,4 @@
 EBOOT.PBP
 *.pbp
 _log/
+_sdk/
