@@ -94,6 +94,9 @@ int main(void){
                 s_state=ST_CLASSSEL;
                 sfxPlay(SFX_CLICK);
             }
+            /* senza frame la GE non riceve comandi: schermo nero su hardware reale */
+            gfxFrameStart(0,0,COL(10,9,6,255));
+            uiRenderTitle(s_blinkT);
         } else if (s_state==ST_CLASSSEL){
             if (pressed & PSP_CTRL_LEFT){  s_classSel=(s_classSel+CLASS_COUNT-1)%CLASS_COUNT; sfxPlay(SFX_CLICK); }
             if (pressed & PSP_CTRL_RIGHT){ s_classSel=(s_classSel+1)%CLASS_COUNT; sfxPlay(SFX_CLICK); }
@@ -104,6 +107,8 @@ int main(void){
                 s_mpSel=0;
                 sfxPlay(SFX_CLICK);
             }
+            gfxFrameStart(0,0,COL(10,9,6,255));
+            uiRenderClassSelect(s_classSel);
         } else if (s_state==ST_MPMENU){
             if (pressed & PSP_CTRL_UP)   { s_mpSel=(s_mpSel+2)%3; sfxPlay(SFX_CLICK); }
             if (pressed & PSP_CTRL_DOWN) { s_mpSel=(s_mpSel+1)%3; sfxPlay(SFX_CLICK); }
