@@ -2,3 +2,4 @@
 *.elf
 EBOOT.PBP
 *.pbp
+_log/
