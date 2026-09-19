@@ -14,6 +14,10 @@
 #include "data.h"
 #include "net.h"
 
+/* forward: definito in game.c, applica danno al giocatore locale */
+void netHitFromRemote(float amount,int poison);
+static void onNetHit(float amount,int poison){ netHitFromRemote(amount,poison); }
+
 PSP_MODULE_INFO("ABISSO", 0, 1, 1);
 PSP_MAIN_THREAD_ATTR(THREAD_ATTR_USER | THREAD_ATTR_VFPU);
 
@@ -68,6 +72,7 @@ int main(void){
         return 0;
     }
     audioInit();
+    netSetHitHandler(onNetHit);
 
     memset(&oldPad,0,sizeof oldPad);
     lastT=nowSeconds();
@@ -168,7 +173,6 @@ int main(void){
                 }
             }
             gameUpdate(dt,&in);
-
             /* ---- render ---- */
             gameRenderWorld();
             if (netActive()) netRenderPlayers();

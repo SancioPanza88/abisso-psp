@@ -3,6 +3,7 @@
 #include "audio.h"
 #include "ui.h"
 #include "atlas_data.h"
+#include "net.h"
 #include <pspuser.h>
 #include <string.h>
 
@@ -855,6 +856,13 @@ void drinkManaPotion(void){
 static void handleDowned(void);
 static void handleLocalDeath(void);
 static void hostAdvanceDepth(void);
+static void applyMonsterHitToMe(float amount,int poison);
+
+/* Danno ricevuto da un mostro via rete (MHIT dall'host). */
+void netHitFromRemote(float amount,int poison){
+    applyMonsterHitToMe(amount,poison);
+}
+
 static void applyMonsterHitToMe(float amount,int poison){
     float finalAmount;
     if (g_me.dead || g_me.invulnTimer>0) return;
@@ -1170,6 +1178,50 @@ static void updateBossAI(Monster* m,float dt);
 typedef struct { float x,y; } PPos;
 static int playerAlive(void){ return !g_me.dead && !g_me.downed; }
 
+/* ------------------------------------------------------------------ */
+/* Multiplayer: bersaglio dei mostri tra tutti i giocatori (come       */
+/* l'originale host-autorevole, dove i mostri inseguono `players[]`).  */
+/* ------------------------------------------------------------------ */
+static float mpTargetX, mpTargetY;      /* posizione del bersaglio corrente */
+static int   mpTargetRemote;            /* 1 se il bersaglio e' un peer remoto */
+static int   mpTargetPeerId;            /* peerId del bersaglio remoto */
+
+/* Seleziona il giocatore (locale o remoto) piu' vicino al mostro. */
+static int pickPlayerTarget(float mx,float my){
+    float bestD2; int have=0;
+    mpTargetRemote=0;
+    if (playerAlive()){
+        bestD2=dist2f(mx,my,g_me.x,g_me.y);
+        mpTargetX=g_me.x; mpTargetY=g_me.y;
+        have=1;
+    } else bestD2=0.f;
+    {
+        int i;
+        for (i=0;i<netPlayerCount();++i){
+            NetPlayer* p=netPlayerAt(i);
+            if (!p || !p->used || p->isLocal) continue;
+            if (p->flags & (NF_DEAD|NF_DOWNED)) continue;
+            if (p->depth != g_world.depth) continue;   /* piani diversi */
+            {
+                float d2=dist2f(mx,my,p->x,p->y);
+                if (!have || d2<bestD2){
+                    bestD2=d2;
+                    mpTargetX=p->x; mpTargetY=p->y;
+                    mpTargetRemote=1; mpTargetPeerId=p->peerId;
+                    have=1;
+                }
+            }
+        }
+    }
+    return have;
+}
+
+/* Danno al bersaglio: locale -> applyMonsterHitToMe; remoto -> rete (MHIT). */
+static void dealTargetHit(float amount,int poison){
+    if (mpTargetRemote) netDealMonsterHit(mpTargetPeerId,amount,poison);
+    else                applyMonsterHitToMe(amount,poison);
+}
+
 static void monBoltVisual(Monster* m,float sp,float life,unsigned int color){
     Proj* p=0; int i;
     float dx=g_me.x-m->x, dy=g_me.y-m->y, l=sqrtf(dx*dx+dy*dy);
@@ -1203,13 +1255,14 @@ static void updateMonsterAI(Monster* m,float dt){
     if (m->affix==AFFIX_RIGENERANTE)
         m->hp=fminf(m->maxHp,m->hp+AFFIXES[AFFIX_RIGENERANTE].regenPerSec*dt);
 
-    if (!playerAlive()){ m->state=2; }
+    if (!playerAlive() && !pickPlayerTarget(m->x,m->y)){ m->state=2; }
     else {
-        d2p=dist2f(m->x,m->y,g_me.x,g_me.y);
+        pickPlayerTarget(m->x,m->y);
+        d2p=dist2f(m->x,m->y,mpTargetX,mpTargetY);
     }
     if (playerAlive() && d2p < m->aggro*m->aggro){
         dp=sqrtf(d2p); if (dp<0.001f) dp=0.001f;
-        dxn=(g_me.x-m->x)/dp; dyn=(g_me.y-m->y)/dp;
+        dxn=(mpTargetX-m->x)/dp; dyn=(mpTargetY-m->y)/dp;
         m->fx=dxn; m->fy=dyn;
         m->state=1;
         /* ---- attacchi dedicati in corso ---- */
@@ -1236,10 +1289,10 @@ static void updateMonsterAI(Monster* m,float dt){
                 m->rx=m->x; m->ry=m->y;
                 return;
             }
-            if (playerAlive() && dist2f(g_me.x,g_me.y,m->x,m->y)<=0.45f*0.45f){
-                applyMonsterHitToMe((float)m->dmg,t->poison);
+            if (mpTargetRemote || (playerAlive() && dist2f(mpTargetX,mpTargetY,m->x,m->y)<=0.45f*0.45f)){
+                dealTargetHit((float)m->dmg,t->poison);
                 { unsigned int cs[1]={t->color};
-                  pfxBurst(g_me.x,g_me.y,12,cs,1,1.f,3.5f,2.f,5.f,0.2f,0.5f,0,0); }
+                  pfxBurst(mpTargetX,mpTargetY,12,cs,1,1.f,3.5f,2.f,5.f,0.2f,0.5f,0,0); }
                 m->boltActive=0;
             }
             m->rx=m->x; m->ry=m->y;
@@ -1247,9 +1300,9 @@ static void updateMonsterAI(Monster* m,float dt){
         }
         if (m->dentT>0){
             m->dentT-=dt;
-            if (m->dentT<=0 && playerAlive() &&
-                dist2f(m->x,m->y,g_me.x,g_me.y)<=1.5f*1.5f){
-                applyMonsterHitToMe((float)m->dmg,0);
+            if (m->dentT<=0 &&
+                dist2f(m->x,m->y,mpTargetX,mpTargetY)<=1.5f*1.5f){
+                dealTargetHit((float)m->dmg,0);
                 m->atkT=0.25f;
             }
         }
@@ -1260,12 +1313,12 @@ static void updateMonsterAI(Monster* m,float dt){
                 switch (m->windFx){
                     case WF_DASH:
                         m->dashKind=WF_DASH;
-                        m->dTx=g_me.x; m->dTy=g_me.y;
+                        m->dTx=mpTargetX; m->dTy=mpTargetY;
                         m->dT=0; m->dDur=0.24f; m->dSpeed=7.2f; m->dHit=0;
                         break;
                     case WF_SWOOP:
                         m->dashKind=WF_SWOOP;
-                        m->dTx=g_me.x; m->dTy=g_me.y;
+                        m->dTx=mpTargetX; m->dTy=mpTargetY;
                         m->dT=0; m->dDur=0.30f; m->dSpeed=6.4f; m->dHit=0;
                         break;
                     case WF_STOMP: {
@@ -1274,16 +1327,16 @@ static void updateMonsterAI(Monster* m,float dt){
                         pfxBurst(m->x,m->y,16,(const unsigned int[]){t->color,C_HEX(E8,E4,DC)},2,
                                  2.f,6.f,2.5f,5.f,0.3f,0.6f,0,0);
                         spellFlash(m->x,m->y,t->color,3);
-                        if (playerAlive() && dist2f(m->x,m->y,g_me.x,g_me.y)<=r*r)
-                            applyMonsterHitToMe((float)m->dmg,0);
+                        if (dist2f(m->x,m->y,mpTargetX,mpTargetY)<=r*r)
+                            dealTargetHit((float)m->dmg,0);
                         break; }
                     case WF_CONE:
-                        if (playerAlive()){
-                            float vx=g_me.x-m->x, vy=g_me.y-m->y;
+                        {
+                            float vx=mpTargetX-m->x, vy=mpTargetY-m->y;
                             float dd=sqrtf(vx*vx+vy*vy); if (dd<0.001f) dd=0.001f;
                             if (dd<=1.6f &&
                                 (vx/dd)*m->fx+(vy/dd)*m->fy>=0.55f)
-                                applyMonsterHitToMe((float)(m->dmg+(int)(frand()*2)),0);
+                                dealTargetHit((float)(m->dmg+(int)(frand()*2)),0);
                         }
                         {   /* fendente a ventaglio */
                             float a0=atan2f(m->fy,m->fx)-0.55f, a1=atan2f(m->fy,m->fx)+0.55f;
@@ -1333,7 +1386,7 @@ static void updateMonsterAI(Monster* m,float dt){
                     m->atkCd=0.8f+frand()*0.2f;
                     m->dentT=0.22f;
                     m->atkT=0.28f;
-                    if (playerAlive()) applyMonsterHitToMe((float)m->dmg,0);
+                    dealTargetHit((float)m->dmg,0);
                 } else if (t->stomp){
                     m->winding=1; m->windT=0.55f; m->windFx=WF_STOMP;
                     m->atkCd=1.3f+frand()*0.4f;
@@ -1343,8 +1396,7 @@ static void updateMonsterAI(Monster* m,float dt){
                 } else {
                     m->atkCd=1.05f+frand()*0.3f;
                     m->atkT=0.28f;
-                    if (playerAlive())
-                        applyMonsterHitToMe((float)(m->dmg+(int)(frand()*2)),t->poison);
+                    dealTargetHit((float)(m->dmg+(int)(frand()*2)),t->poison);
                     if (t->lifesteal) m->hp=fminf(m->maxHp,m->hp+2);
                 }
             }
@@ -1376,17 +1428,17 @@ static void updateMonsterAI(Monster* m,float dt){
 /* ------------------------------------------------------------------ */
 static void bossConeDamage(Monster* m,const BossVariant* C){
     float vx,vy,dd;
-    if (!playerAlive()) return;
-    vx=g_me.x-m->x; vy=g_me.y-m->y;
+    if (!playerAlive() && !mpTargetRemote) return;
+    vx=mpTargetX-m->x; vy=mpTargetY-m->y;
     dd=sqrtf(vx*vx+vy*vy); if (dd<0.001f) dd=0.001f;
     if (dd>C->breathDist) return;
     if ((vx/dd)*m->fx+(vy/dd)*m->fy < BOSS.breathArcCos) return;
-    applyMonsterHitToMe((float)((int)BOSS.breathDmg),C->poisonHit);
+    dealTargetHit((float)((int)BOSS.breathDmg),C->poisonHit);
 }
 static void bossFireballExplode(Monster* m,const BossVariant* C){
     int hitAny=0;
-    if (playerAlive() && dist2f(g_me.x,g_me.y,m->fbx,m->fby)<=C->fbR*C->fbR){
-        applyMonsterHitToMe((float)C->fbDmg,C->poisonHit);
+    if (dist2f(mpTargetX,mpTargetY,m->fbx,m->fby)<=C->fbR*C->fbR){
+        dealTargetHit((float)C->fbDmg,C->poisonHit);
         hitAny=1;
     }
     pushShockwave(m->fbx,m->fby,0.45f,C->fbColor,0);
@@ -1449,12 +1501,13 @@ static void updateBossAI(Monster* m,float dt){
 
     excl[0]=L->safeX; excl[1]=L->safeY; excl[2]=L->safeW; excl[3]=L->safeH;
 
-    /* bossTarget: il giocatore */
-    if (!playerAlive()){
+    /* bossTarget: il giocatore (locale o remoto piu' vicino) */
+    if (!playerAlive() && !pickPlayerTarget(m->x,m->y)){
         m->state=0;
         return;
     }
-    dxn=g_me.x-m->x; dyn=g_me.y-m->y;
+    pickPlayerTarget(m->x,m->y);
+    dxn=mpTargetX-m->x; dyn=mpTargetY-m->y;
     d=sqrtf(dxn*dxn+dyn*dyn); if (d<0.001f) d=0.001f;
     dxn/=d; dyn/=d;
     m->fx=dxn; m->fy=dyn;
@@ -1500,7 +1553,7 @@ static void updateBossAI(Monster* m,float dt){
         m->bmT-=dt;
         {
             int aim=m->bmT<BOSS.flyDur*0.35f;
-            if (aim){ m->bmWpX=g_me.x; m->bmWpY=g_me.y; m->bmHasWp=1; }
+            if (aim){ m->bmWpX=mpTargetX; m->bmWpY=mpTargetY; m->bmHasWp=1; }
             else if (!m->bmHasWp || dist2f(m->x,m->y,m->bmWpX,m->bmWpY)<1.1f)
                 pickBossFlyWaypoint(m,&m->bmWpX,&m->bmWpY), m->bmHasWp=1;
         }
@@ -1514,7 +1567,7 @@ static void updateBossAI(Monster* m,float dt){
             smokeBurst(m->x,m->y,C_HEX(6A,5C,46),16);
             if (d<=8){
                 strcpy(m->bmMove,"dive"); m->bmPhase=0; m->bmT=BOSS.diveHover;
-                m->bmTx=g_me.x; m->bmTy=g_me.y;
+                m->bmTx=mpTargetX; m->bmTy=mpTargetY;
                 m->winding=1; m->windT=BOSS.diveHover;
             } else { m->bmMove[0]=0; m->bmT=0.5f; }
         }
@@ -1534,8 +1587,8 @@ static void updateBossAI(Monster* m,float dt){
                          2.5f,7.5f,3.f,6.f,0.3f,0.65f,0,0);
                 pushShockwave(m->bmTx,m->bmTy,0.5f,C_HEX(FF,7A,2D),0);
                 spellFlash(m->bmTx,m->bmTy,C_HEX(FF,8A,3D),3.5f);
-                if (playerAlive() && dist2f(g_me.x,g_me.y,m->bmTx,m->bmTy)<=BOSS.diveR*BOSS.diveR){
-                    applyMonsterHitToMe(BOSS.diveDmg,0);
+                if (dist2f(mpTargetX,mpTargetY,m->bmTx,m->bmTy)<=BOSS.diveR*BOSS.diveR){
+                    dealTargetHit(BOSS.diveDmg,0);
                     addShake(0.85f); sfxPlay(SFX_BOSS_ROAR);
                 } else { addShake(0.4f); sfxPlay(SFX_BOOM); }
                 m->bmPhase=1; m->bmT=BOSS.diveRecover;
@@ -1587,7 +1640,7 @@ static void updateBossAI(Monster* m,float dt){
             int burst=0;
             m->fbLife-=dt;
             m->fbx+=m->fbvx*dt; m->fby+=m->fbvy*dt;
-            if (playerAlive() && dist2f(g_me.x,g_me.y,m->fbx,m->fby)<=(C.fbR+0.35f)*(C.fbR+0.35f)){
+            if (dist2f(mpTargetX,mpTargetY,m->fbx,m->fby)<=(C.fbR+0.35f)*(C.fbR+0.35f)){
                 bossFireballExplode(m,&C); burst=1;
             }
             if (!burst && m->fbLife<=0){ bossFireballExplode(m,&C); burst=1; }
@@ -1606,8 +1659,8 @@ static void updateBossAI(Monster* m,float dt){
                 pfxBurst(m->x,m->y,18,(const unsigned int[]){C.fbColor,C_HEX(E8,E4,DC)},2,
                          2.f,6.5f,2.5f,5.5f,0.3f,0.65f,0,0);
                 spellFlash(m->x,m->y,C.fbColor,3.4f);
-                if (playerAlive() && dist2f(m->x,m->y,g_me.x,g_me.y)<=r*r)
-                    applyMonsterHitToMe((float)(m->dmg+2),0);
+                if (dist2f(m->x,m->y,mpTargetX,mpTargetY)<=r*r)
+                    dealTargetHit((float)(m->dmg+2),0);
                 addShake(0.55f); sfxPlay(SFX_BOOM);
                 m->bmPhase=1; m->bmT=0.5f;
             }
@@ -1651,7 +1704,7 @@ static void updateBossAI(Monster* m,float dt){
             if (m->windT<=0){
                 m->winding=0;
                 m->bmPhase=1; m->bmT=1.15f; m->bmHitDone=0;
-                m->bmTx=g_me.x; m->bmTy=g_me.y;
+                m->bmTx=mpTargetX; m->bmTy=mpTargetY;
                 sfxPlay(SFX_BOSS_ROAR);
             }
         } else {
@@ -1662,7 +1715,7 @@ static void updateBossAI(Monster* m,float dt){
                 tryMoveEntity(L,&m->x,&m->y,6.f,cvx/cl,cvy/cl,dt,0.27f,excl);
                 if (!m->bmHitDone && cl<0.95f){
                     m->bmHitDone=1;
-                    if (playerAlive()) applyMonsterHitToMe((float)(m->dmg+2),0);
+                    dealTargetHit((float)(m->dmg+2),0);
                     pushShockwave(m->x,m->y,0.45f,C.fbColor,0);
                     pfxBurst(m->x,m->y,20,(const unsigned int[]){C.fbColor,C_HEX(FF,D2,3D),0xFFFFFFFFu},3,
                              2.f,7.f,2.5f,5.5f,0.25f,0.6f,0,0);
@@ -1680,7 +1733,7 @@ static void updateBossAI(Monster* m,float dt){
                 m->windT-=dt;
                 if (m->windT<=0){
                     m->winding=0; m->atkT=0.32f;
-                    if (playerAlive()) applyMonsterHitToMe((float)(m->dmg+(int)(frand()*2)),0);
+                    dealTargetHit((float)(m->dmg+(int)(frand()*2)),0);
                     m->atkCd=1.05f+frand()*0.35f;
                 }
             }
