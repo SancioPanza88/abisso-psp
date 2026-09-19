@@ -326,11 +326,11 @@ static int initInet(const char* host)
     s_dest.sin_family = AF_INET;
     s_dest.sin_port = htons(NET_PORT);
     {
-        /* "host" qui e' il nome stanza ("abisso"), non un IP: se inet_addr
-           fallisce si usa il broadcast, scoperto poi dal bridge PC. */
-        in_addr_t addr = (host && host[0]) ? inet_addr(host) : INADDR_NONE;
-        if (addr == (in_addr_t)INADDR_NONE) addr = htonl(INADDR_BROADCAST);
-        s_dest.sin_addr.s_addr = addr;
+        /* "host" qui e' il nome stanza ("abisso"), non un IP: in quel caso
+           inet_addr fallisce restituendo 255.255.255.255, cioe' il broadcast
+           da cui il bridge PC impara l'indirizzo della PSP. Si evita
+           INADDR_NONE: non e' dichiarato negli header PSPSDK. */
+        s_dest.sin_addr.s_addr = (host && host[0]) ? inet_addr(host) : htonl(0xffffffffu);
     }
     /* id univoco per dispositivo: mescola il MAC (sceWlanGetEtherAddr,
        pspwlan.h) con il nome, cosi' due PSP con lo stesso nome non collidono */
