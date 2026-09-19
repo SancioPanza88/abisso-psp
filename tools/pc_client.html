@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ABISSO — client PC per bridge PSP</title>
+<style>
+  body { background:#0a0906; color:#e8dcc5; font-family:monospace; margin:0; padding:16px; }
+  h1 { color:#e8a13d; font-size:18px; }
+  #view { border:1px solid #b5651d; background:#070502; display:block; }
+  #log { border:1px solid #372c1f; height:120px; overflow-y:auto; padding:6px; margin-top:8px; font-size:12px; }
+  #row { margin-top:8px; display:flex; gap:6px; }
+  input, button { background:#161109; border:1px solid #b5651d; color:#e8dcc5; padding:6px 10px; font-family:monospace; }
+  button { cursor:pointer; }
+  .sys { color:#e8a13d; }
+</style>
+</head>
+<body>
+<h1>ABISSO — client PC (via bridge)</h1>
+<p>1) Avvia <code>node tools/pc_bridge.js</code>. 2) Sulla PSP: "Multiplayer Rete (PSP-PC)". 3) Connetti qui sotto.</p>
+<div id="row">
+  <input id="wsurl" size="28" value="ws://localhost:34569">
+  <input id="name" size="12" maxlength="15" value="EroePC">
+  <button id="connect">Connetti</button>
+  <input id="chat" size="30" maxlength="47" placeholder="chat + Invio">
+  <button id="send">Invia</button>
+</div>
+<canvas id="view" width="480" height="272"></canvas>
+<div id="log"></div>
+<script>
+"use strict";
+/* Layout binario di NetPacket (src/net.h / src/net.c), little-endian:
+   u8 type, u8 flags, u16 seq, i32 peerId,
+   f32 x, y, fx, fy, hp, maxHp, i32 a, i32 b, char text[48]. Totale 88 byte. */
+const PKT_LEN = 88;
+const NMSG = { HELLO:1, BYE:2, INPUT:3, STATE:4, SNAPSHOT:5, MHIT:6, SYNCREQ:7, SYNCREP:8, CHAT:9, PING:10, PONG:11 };
+const NF = { ATTACK:1, ABILITY:2, INTERACT:4, POTION:8, MANAPOT:16, DEAD:32, DOWNED:64 };
+const CLASS_NAMES = ["Guerriero","Ladro","Mago","Ranger","Prof","Paladino","Negromante","Bardo","Monaco"];
+const CLASS_COLORS = ["#f5f0dc","#7fae63","#5fa0c9","#7fae63","#d4af37","#e8dcc5","#b478e6","#e8a13d","#5adcbe"];
+
+let ws = null, seq = 0, connected = false;
+const me = { id: (Math.random()*0x7fffffff)|0, x: 5, y: 5, fx: 1, fy: 0, hp: 12, maxHp: 12, cls: 0, depth: 1 };
+const peers = new Map();
+const keys = {};
+const logEl = document.getElementById("log");
+const canvas = document.getElementById("view");
+const ctx = canvas.getContext("2d");
+
+function log(msg, cls) {
+  const d = document.createElement("div");
+  if (cls) d.className = cls;
+  d.textContent = msg;
+  logEl.appendChild(d);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function parsePkt(buf) {
+  if (buf.byteLength < PKT_LEN) return null;
+  const v = new DataView(buf);
+  const textBytes = new Uint8Array(buf, 40, 48);
+  let text = "";
+  for (let i = 0; i < 48 && textBytes[i]; i++) text += String.fromCharCode(textBytes[i]);
+  return {
+    type: v.getUint8(0), flags: v.getUint8(1), seq: v.getUint16(2, true),
+    peerId: v.getInt32(4, true),
+    x: v.getFloat32(8, true), y: v.getFloat32(12, true),
+    fx: v.getFloat32(16, true), fy: v.getFloat32(20, true),
+    hp: v.getFloat32(24, true), maxHp: v.getFloat32(28, true),
+    a: v.getInt32(32, true), b: v.getInt32(36, true), text
+  };
+}
+function sendPkt(type, extra) {
+  if (!connected) return;
+  const buf = new ArrayBuffer(PKT_LEN);
+  const v = new DataView(buf);
+  v.setUint8(0, type);
+  v.setUint8(1, 0);
+  v.setUint16(2, (++seq) & 0xffff, true);
+  v.setInt32(4, me.id, true);
+  v.setFloat32(8, me.x, true); v.setFloat32(12, me.y, true);
+  v.setFloat32(16, me.fx, true); v.setFloat32(20, me.fy, true);
+  v.setFloat32(24, me.hp, true); v.setFloat32(28, me.maxHp, true);
+  v.setInt32(32, me.cls, true); v.setInt32(36, me.depth, true);
+  if (extra && extra.text) {
+    const enc = new TextEncoder().encode(extra.text.slice(0, 47));
+    new Uint8Array(buf, 40, 48).set(enc);
+  }
+  ws.send(buf);
+}
+function onPkt(p) {
+  if (p.peerId === me.id) return;
+  if (p.type === NMSG.BYE) { peers.delete(p.peerId); log("giocatore uscito: " + p.peerId, "sys"); return; }
+  if (p.type === NMSG.PING) { sendPkt(NMSG.PONG); return; }
+  if (p.type === NMSG.MHIT) return; /* danni ai mostri: solo la PSP li applica */
+  if (p.type === NMSG.CHAT && p.text) { log("[" + p.peerId + "] " + p.text); return; }
+  if (p.type === NMSG.HELLO || p.type === NMSG.INPUT || p.type === NMSG.STATE) {
+    peers.set(p.peerId, p);
+    if (p.type === NMSG.HELLO) { log("giocatore entrato: " + p.peerId + " (" + (CLASS_NAMES[p.a] || "?") + ")", "sys"); sendPkt(NMSG.STATE); }
+  }
+}
+function draw() {
+  ctx.fillStyle = "#070502";
+  ctx.fillRect(0, 0, 480, 272);
+  const camX = me.x * 22 - 240, camY = me.y * 22 - 136;
+  function dot(wx, wy, color, label) {
+    const sx = wx * 22 - camX, sy = wy * 22 - camY;
+    ctx.fillStyle = color;
+    ctx.fillRect(sx - 5, sy - 5, 10, 10);
+    if (label) { ctx.fillStyle = "#e8dcc5"; ctx.font = "10px monospace"; ctx.fillText(label, sx + 8, sy + 3); }
+  }
+  for (const p of peers.values()) {
+    const dead = (p.flags & NF.DEAD) !== 0, down = (p.flags & NF.DOWNED) !== 0;
+    dot(p.x, p.y, dead ? "#551111" : (CLASS_COLORS[p.a] || "#fff"), (CLASS_NAMES[p.a] || p.peerId) + (down ? " (a terra)" : ""));
+  }
+  dot(me.x, me.y, "#e8a13d", "TU");
+  requestAnimationFrame(draw);
+}
+let lastState = 0;
+function tick(t) {
+  if (connected) {
+    let dx = 0, dy = 0;
+    if (keys.a || keys.arrowleft) dx -= 1;
+    if (keys.d || keys.arrowright) dx += 1;
+    if (keys.w || keys.arrowup) dy -= 1;
+    if (keys.s || keys.arrowdown) dy += 1;
+    if (dx || dy) {
+      const l = Math.hypot(dx, dy); dx /= l; dy /= l;
+      me.x += dx * 4 * 0.05; me.y += dy * 4 * 0.05; me.fx = dx; me.fy = dy;
+    }
+    if (t - lastState > 50) { lastState = t; sendPkt(NMSG.STATE); } /* 20 Hz come la PSP */
+  }
+  requestAnimationFrame(tick);
+}
+document.getElementById("connect").onclick = () => {
+  if (connected) { sendPkt(NMSG.BYE); ws.close(); return; }
+  me.name = document.getElementById("name").value.slice(0, 15) || "EroePC";
+  ws = new WebSocket(document.getElementById("wsurl").value);
+  ws.binaryType = "arraybuffer";
+  ws.onopen = () => { connected = true; document.getElementById("connect").textContent = "Esci"; log("connesso al bridge", "sys"); sendPkt(NMSG.HELLO); };
+  ws.onclose = () => { connected = false; document.getElementById("connect").textContent = "Connetti"; log("disconnesso", "sys"); };
+  ws.onerror = () => log("errore: avvia prima node tools/pc_bridge.js", "sys");
+  ws.onmessage = (ev) => { const p = parsePkt(ev.data); if (p) onPkt(p); };
+};
+function sendChat() {
+  const el = document.getElementById("chat");
+  if (el.value) { sendPkt(NMSG.CHAT, { text: el.value }); log("[tu] " + el.value); el.value = ""; }
+}
+document.getElementById("send").onclick = sendChat;
+document.getElementById("chat").onkeydown = (e) => { if (e.key === "Enter") sendChat(); };
+window.addEventListener("keydown", (e) => { keys[e.key.toLowerCase()] = true; });
+window.addEventListener("keyup", (e) => { keys[e.key.toLowerCase()] = false; });
+requestAnimationFrame(draw);
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

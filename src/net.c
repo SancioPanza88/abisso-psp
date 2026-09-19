@@ -257,7 +257,27 @@ static int initAdhoc(void)
     if (sceNetAdhocInit() < 0) return 0;
     if (sceNetAdhocctlInit(0x2000, 0x30, &product) < 0) return 0;
     if (sceNetAdhocctlConnect("ABISSO") < 0) return 0;
+    /* Come da documentazione PSPSDK (pspnet_adhocctl.h): dopo Connect bisogna
+       attendere che sceNetAdhocctlGetState diventi 1 prima di creare il PDP. */
+    {
+        int st = 0, tries = 0;
+        while (tries++ < 50) {
+            if (sceNetAdhocctlGetState(&st) < 0) return 0;
+            if (st == 1) break;
+            sceKernelDelayThread(100000);
+        }
+        if (st != 1) return 0;
+    }
     if (sceWlanGetEtherAddr(s_adhocMac) < 0) return 0;
+    /* id univoco per dispositivo (vedi initInet): due PSP "Eroe" non collidono */
+    {
+        unsigned int mix = ((unsigned int)s_adhocMac[2] << 24) |
+                           ((unsigned int)s_adhocMac[3] << 16) |
+                           ((unsigned int)s_adhocMac[4] << 8) |
+                           (unsigned int)s_adhocMac[5];
+        s_localId = (int)((hashStr(s_name) ^ mix) & 0x7fffffff);
+        if (s_localId == 0) s_localId = 1;
+    }
     memset(s_adhocBcast, 0xff, sizeof(s_adhocBcast));
     s_adhocId = sceNetAdhocPdpCreate(s_adhocMac, NET_ADHOC_PORT, 0x400, 0);
     if (s_adhocId < 0) return 0;
@@ -271,22 +291,61 @@ static int initInet(const char* host)
         if (sceNetInetInit() < 0) return 0;
         if (sceNetApctlInit(0x1000, 0x48) < 0) return 0;
         /* connessione al primo profilo di rete configurato sulla PSP */
-        sceNetApctlConnect(1);
+        if (sceNetApctlConnect(1) < 0) return 0;
+        /* Come da documentazione PSPSDK (pspnet_apctl.h): dopo Connect bisogna
+           attendere PSP_NET_APCTL_STATE_GOT_IP (4) prima di usare i socket. */
+        {
+            int st = 0, tries = 0;
+            while (tries++ < 100) {
+                if (sceNetApctlGetState(&st) < 0) return 0;
+                if (st == PSP_NET_APCTL_STATE_GOT_IP) break;
+                sceKernelDelayThread(100000);
+            }
+            if (st != PSP_NET_APCTL_STATE_GOT_IP) return 0;
+        }
         s_netInited = 1;
     }
     s_sock = socket(AF_INET, SOCK_DGRAM, 0);
     if (s_sock < 0) return 0;
+    {
+        int one = 1;
+        setsockopt(s_sock, SOL_SOCKET, SO_BROADCAST, &one, sizeof(one));
+    }
     struct sockaddr_in local;
     memset(&local, 0, sizeof(local));
     local.sin_family = AF_INET;
     local.sin_port = htons(NET_PORT);
     local.sin_addr.s_addr = htonl(INADDR_ANY);
-    bind(s_sock, (struct sockaddr*)&local, sizeof(local));
+    if (bind(s_sock, (struct sockaddr*)&local, sizeof(local)) < 0) {
+        close(s_sock);
+        s_sock = -1;
+        return 0;
+    }
 
     memset(&s_dest, 0, sizeof(s_dest));
     s_dest.sin_family = AF_INET;
     s_dest.sin_port = htons(NET_PORT);
-    s_dest.sin_addr.s_addr = inet_addr(host ? host : "255.255.255.255");
+    {
+        /* "host" qui e' il nome stanza ("abisso"), non un IP: se inet_addr
+           fallisce si usa il broadcast, scoperto poi dal bridge PC. */
+        in_addr_t addr = (host && host[0]) ? inet_addr(host) : INADDR_NONE;
+        if (addr == (in_addr_t)INADDR_NONE) addr = htonl(INADDR_BROADCAST);
+        s_dest.sin_addr.s_addr = addr;
+    }
+    /* id univoco per dispositivo: mescola il MAC (sceWlanGetEtherAddr,
+       pspwlan.h) con il nome, cosi' due PSP con lo stesso nome non collidono */
+    {
+        unsigned char mac[8];
+        memset(mac, 0, sizeof(mac));
+        if (sceWlanGetEtherAddr(mac) >= 0) {
+            unsigned int mix = ((unsigned int)mac[2] << 24) |
+                               ((unsigned int)mac[3] << 16) |
+                               ((unsigned int)mac[4] << 8) |
+                               (unsigned int)mac[5];
+            s_localId = (int)((hashStr(s_name) ^ mix) & 0x7fffffff);
+            if (s_localId == 0) s_localId = 1;
+        }
+    }
     return 1;
 }
 
@@ -297,15 +356,19 @@ int netInit(int transport, const char* room, const char* playerName, int cls)
     s_cls = cls;
     snprintf(s_name, NET_NAME_LEN, "%s", playerName ? playerName : "Eroe");
     s_localId = (int)(hashStr(s_name) & 0x7fffffff);
+    if (s_localId == 0) s_localId = 1;
     s_isHost = 1;   /* primo giocatore = host; i client si agganciano via HELLO */
     s_seq = 0;
     s_snapshotLen = 0;
-    playersReset();
 
     int ok = 0;
     if (transport == NET_TRANSPORT_ADHOC) ok = initAdhoc();
     else if (transport == NET_TRANSPORT_INET) ok = initInet(room);
     if (!ok) { s_transport = NET_TRANSPORT_NONE; return 0; }
+
+    /* playersReset dopo l'init: initAdhoc/initInet finalizzano s_localId
+       mescolando il MAC, cosi' s_players[0].peerId e' quello definitivo */
+    playersReset();
 
     s_active = 1;
     sendPacket(NMSG_HELLO, s_localId, &s_players[0]);
@@ -444,6 +507,7 @@ void netRenderPlayers(void)
         case 1: atlas = AR_HERO_LADRO; break;
         case 2: atlas = AR_HERO_MAGO; break;
         case 3: atlas = AR_HERO_RANGER; break;
+        case 4: atlas = AR_HERO_PROF; break;
         case 5: atlas = AR_HERO_PALADINO; break;
         case 6: atlas = AR_HERO_NEGROMANTE; break;
         case 7: atlas = AR_HERO_BARDO; break;
